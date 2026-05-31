@@ -817,161 +817,86 @@ void cv::reduce(InputArray _src, OutputArray _dst, int dim, int op, int dtype)
     }
 
     ReduceFunc func = 0;
-    if( dim == 0 )
-    {
-        if( op == REDUCE_SUM )
-        {
-            ReduceSumFunc simd_func = getReduceRSumFunc(sdepth, ddepth);
-            if(simd_func)
-                func = (ReduceFunc)simd_func;
-            else if(sdepth == CV_8U && ddepth == CV_32S)
-                func = reduceSumR8u32s;
-            else if(sdepth == CV_8U && ddepth == CV_32F)
-                func = reduceSumR8u32f;
-            else if(sdepth == CV_8U && ddepth == CV_64F)
-                func = reduceSumR8u64f;
-            else if(sdepth == CV_16U && ddepth == CV_32F)
-                func = reduceSumR16u32f;
-            else if(sdepth == CV_16U && ddepth == CV_64F)
-                func = reduceSumR16u64f;
-            else if(sdepth == CV_16S && ddepth == CV_32F)
-                func = reduceSumR16s32f;
-            else if(sdepth == CV_16S && ddepth == CV_64F)
-                func = reduceSumR16s64f;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceSumR32f32f;
-            else if(sdepth == CV_32F && ddepth == CV_64F)
-                func = reduceSumR32f64f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceSumR64f64f;
+
+    // ===== table-driven dispatch for all op/dim/type combinations =====
+    struct ReduceFuncPair {
+        int sdepth, ddepth;
+        ReduceFunc rowFunc;   // dim == 0
+        ReduceFunc colFunc;   // dim == 1
+    };
+
+    static const ReduceFuncPair sumPairs[] = {
+        {CV_8U, CV_32S, (ReduceFunc)reduceSumR8u32s, (ReduceFunc)reduceSumC8u32s},
+        {CV_8U, CV_32F, (ReduceFunc)reduceSumR8u32f, (ReduceFunc)reduceSumC8u32f},
+        {CV_8U, CV_64F, (ReduceFunc)reduceSumR8u64f, (ReduceFunc)reduceSumC8u64f},
+        {CV_16U, CV_32F, (ReduceFunc)reduceSumR16u32f, (ReduceFunc)reduceSumC16u32f},
+        {CV_16U, CV_64F, (ReduceFunc)reduceSumR16u64f, (ReduceFunc)reduceSumC16u64f},
+        {CV_16S, CV_32F, (ReduceFunc)reduceSumR16s32f, (ReduceFunc)reduceSumC16s32f},
+        {CV_16S, CV_64F, (ReduceFunc)reduceSumR16s64f, (ReduceFunc)reduceSumC16s64f},
+        {CV_32F, CV_32F, (ReduceFunc)reduceSumR32f32f, (ReduceFunc)reduceSumC32f32f},
+        {CV_32F, CV_64F, (ReduceFunc)reduceSumR32f64f, (ReduceFunc)reduceSumC32f64f},
+        {CV_64F, CV_64F, (ReduceFunc)reduceSumR64f64f, (ReduceFunc)reduceSumC64f64f},
+    };
+
+    static const ReduceFuncPair maxPairs[] = {
+        {CV_8U, CV_8U, (ReduceFunc)reduceMaxR8u, (ReduceFunc)reduceMaxC8u},
+        {CV_16U, CV_16U, (ReduceFunc)reduceMaxR16u, (ReduceFunc)reduceMaxC16u},
+        {CV_16S, CV_16S, (ReduceFunc)reduceMaxR16s, (ReduceFunc)reduceMaxC16s},
+        {CV_32F, CV_32F, (ReduceFunc)reduceMaxR32f, (ReduceFunc)reduceMaxC32f},
+        {CV_64F, CV_64F, (ReduceFunc)reduceMaxR64f, (ReduceFunc)reduceMaxC64f},
+    };
+
+    static const ReduceFuncPair minPairs[] = {
+        {CV_8U, CV_8U, (ReduceFunc)reduceMinR8u, (ReduceFunc)reduceMinC8u},
+        {CV_16U, CV_16U, (ReduceFunc)reduceMinR16u, (ReduceFunc)reduceMinC16u},
+        {CV_16S, CV_16S, (ReduceFunc)reduceMinR16s, (ReduceFunc)reduceMinC16s},
+        {CV_32F, CV_32F, (ReduceFunc)reduceMinR32f, (ReduceFunc)reduceMinC32f},
+        {CV_64F, CV_64F, (ReduceFunc)reduceMinR64f, (ReduceFunc)reduceMinC64f},
+    };
+
+    static const ReduceFuncPair sum2Pairs[] = {
+        {CV_8U, CV_32S, (ReduceFunc)reduceSum2R8u32s, (ReduceFunc)reduceSum2C8u32s},
+        {CV_8U, CV_32F, (ReduceFunc)reduceSum2R8u32f, (ReduceFunc)reduceSum2C8u32f},
+        {CV_8U, CV_64F, (ReduceFunc)reduceSum2R8u64f, (ReduceFunc)reduceSum2C8u64f},
+        {CV_16U, CV_32F, (ReduceFunc)reduceSum2R16u32f, (ReduceFunc)reduceSum2C16u32f},
+        {CV_16U, CV_64F, (ReduceFunc)reduceSum2R16u64f, (ReduceFunc)reduceSum2C16u64f},
+        {CV_16S, CV_32F, (ReduceFunc)reduceSum2R16s32f, (ReduceFunc)reduceSum2C16s32f},
+        {CV_16S, CV_64F, (ReduceFunc)reduceSum2R16s64f, (ReduceFunc)reduceSum2C16s64f},
+        {CV_32F, CV_32F, (ReduceFunc)reduceSum2R32f32f, (ReduceFunc)reduceSum2C32f32f},
+        {CV_32F, CV_64F, (ReduceFunc)reduceSum2R32f64f, (ReduceFunc)reduceSum2C32f64f},
+        {CV_64F, CV_64F, (ReduceFunc)reduceSum2R64f64f, (ReduceFunc)reduceSum2C64f64f},
+    };
+
+    auto findFunc = [](const ReduceFuncPair* table, int n, int dimIdx,
+                       int sd, int dd) -> ReduceFunc {
+        for (int k = 0; k < n; k++) {
+            if (table[k].sdepth == sd && table[k].ddepth == dd)
+                return dimIdx == 0 ? table[k].rowFunc : table[k].colFunc;
         }
-        else if(op == REDUCE_MAX)
-        {
-            if(sdepth == CV_8U && ddepth == CV_8U)
-                func = reduceMaxR8u;
-            else if(sdepth == CV_16U && ddepth == CV_16U)
-                func = reduceMaxR16u;
-            else if(sdepth == CV_16S && ddepth == CV_16S)
-                func = reduceMaxR16s;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceMaxR32f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceMaxR64f;
-        }
-        else if(op == REDUCE_MIN)
-        {
-            if(sdepth == CV_8U && ddepth == CV_8U)
-                func = reduceMinR8u;
-            else if(sdepth == CV_16U && ddepth == CV_16U)
-                func = reduceMinR16u;
-            else if(sdepth == CV_16S && ddepth == CV_16S)
-                func = reduceMinR16s;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceMinR32f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceMinR64f;
-        }
-        else if( op == REDUCE_SUM2 )
-        {
-            if(sdepth == CV_8U && ddepth == CV_32S)
-                func = reduceSum2R8u32s;
-            else if(sdepth == CV_8U && ddepth == CV_32F)
-                func = reduceSum2R8u32f;
-            else if(sdepth == CV_8U && ddepth == CV_64F)
-                func = reduceSum2R8u64f;
-            else if(sdepth == CV_16U && ddepth == CV_32F)
-                func = reduceSum2R16u32f;
-            else if(sdepth == CV_16U && ddepth == CV_64F)
-                func = reduceSum2R16u64f;
-            else if(sdepth == CV_16S && ddepth == CV_32F)
-                func = reduceSum2R16s32f;
-            else if(sdepth == CV_16S && ddepth == CV_64F)
-                func = reduceSum2R16s64f;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceSum2R32f32f;
-            else if(sdepth == CV_32F && ddepth == CV_64F)
-                func = reduceSum2R32f64f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceSum2R64f64f;
-        }
+        return nullptr;
+    };
+
+    // SIMD dispatch for REDUCE_SUM (row/col paths differ here)
+    if (op == REDUCE_SUM) {
+        ReduceSumFunc simd_func = (dim == 0)
+            ? getReduceRSumFunc(sdepth, ddepth)
+            : getReduceCSumFunc(sdepth, ddepth);
+        if (simd_func)
+            func = (ReduceFunc)simd_func;
     }
-    else
-    {
-        if(op == REDUCE_SUM)
-        {
-            ReduceSumFunc simd_func = getReduceCSumFunc(sdepth, ddepth);
-            if(simd_func)
-                func = (ReduceFunc)simd_func;
-            else if(sdepth == CV_8U && ddepth == CV_32S)
-                func = reduceSumC8u32s;
-            else if(sdepth == CV_8U && ddepth == CV_32F)
-                func = reduceSumC8u32f;
-            else if(sdepth == CV_8U && ddepth == CV_64F)
-                func = reduceSumC8u64f;
-            else if(sdepth == CV_16U && ddepth == CV_32F)
-                func = reduceSumC16u32f;
-            else if(sdepth == CV_16U && ddepth == CV_64F)
-                func = reduceSumC16u64f;
-            else if(sdepth == CV_16S && ddepth == CV_32F)
-                func = reduceSumC16s32f;
-            else if(sdepth == CV_16S && ddepth == CV_64F)
-                func = reduceSumC16s64f;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceSumC32f32f;
-            else if(sdepth == CV_32F && ddepth == CV_64F)
-                func = reduceSumC32f64f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceSumC64f64f;
+
+    // scalar fallback via lookup tables
+    if (!func) {
+        const ReduceFuncPair* table = nullptr;
+        int n = 0;
+        switch (op) {
+            case REDUCE_SUM:  table = sumPairs;  n = sizeof(sumPairs)/sizeof(sumPairs[0]);  break;
+            case REDUCE_MAX:  table = maxPairs;  n = sizeof(maxPairs)/sizeof(maxPairs[0]);  break;
+            case REDUCE_MIN:  table = minPairs;  n = sizeof(minPairs)/sizeof(minPairs[0]);  break;
+            case REDUCE_SUM2: table = sum2Pairs; n = sizeof(sum2Pairs)/sizeof(sum2Pairs[0]); break;
         }
-        else if(op == REDUCE_MAX)
-        {
-            if(sdepth == CV_8U && ddepth == CV_8U)
-                func = reduceMaxC8u;
-            else if(sdepth == CV_16U && ddepth == CV_16U)
-                func = reduceMaxC16u;
-            else if(sdepth == CV_16S && ddepth == CV_16S)
-                func = reduceMaxC16s;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceMaxC32f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceMaxC64f;
-        }
-        else if(op == REDUCE_MIN)
-        {
-            if(sdepth == CV_8U && ddepth == CV_8U)
-                func = reduceMinC8u;
-            else if(sdepth == CV_16U && ddepth == CV_16U)
-                func = reduceMinC16u;
-            else if(sdepth == CV_16S && ddepth == CV_16S)
-                func = reduceMinC16s;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceMinC32f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceMinC64f;
-        }
-        else if(op == REDUCE_SUM2)
-        {
-            if(sdepth == CV_8U && ddepth == CV_32S)
-                func = reduceSum2C8u32s;
-            else if(sdepth == CV_8U && ddepth == CV_32F)
-                func = reduceSum2C8u32f;
-            else if(sdepth == CV_8U && ddepth == CV_64F)
-                func = reduceSum2C8u64f;
-            else if(sdepth == CV_16U && ddepth == CV_32F)
-                func = reduceSum2C16u32f;
-            else if(sdepth == CV_16U && ddepth == CV_64F)
-                func = reduceSum2C16u64f;
-            else if(sdepth == CV_16S && ddepth == CV_32F)
-                func = reduceSum2C16s32f;
-            else if(sdepth == CV_16S && ddepth == CV_64F)
-                func = reduceSum2C16s64f;
-            else if(sdepth == CV_32F && ddepth == CV_32F)
-                func = reduceSum2C32f32f;
-            else if(sdepth == CV_32F && ddepth == CV_64F)
-                func = reduceSum2C32f64f;
-            else if(sdepth == CV_64F && ddepth == CV_64F)
-                func = reduceSum2C64f64f;
-        }
+        if (table)
+            func = findFunc(table, n, dim, sdepth, ddepth);
     }
 
     if( !func )
