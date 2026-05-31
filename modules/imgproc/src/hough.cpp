@@ -926,6 +926,9 @@ void HoughLines( InputArray _image, OutputArray lines,
 {
     CV_INSTRUMENT_REGION();
 
+    CV_CheckGT(rho, 0.0, "rho must be greater than 0");
+    CV_CheckGT(theta, 0.0, "theta must be greater than 0");
+
     int type = CV_32FC2;
     if (lines.fixedType())
     {
@@ -970,7 +973,7 @@ void HoughLinesPointSet( InputArray _point, OutputArray _lines, int lines_max, i
     if( lines_max <= 0 ) {
         CV_Error( Error::StsBadArg, "lines_max must be greater than 0" );
     }
-    if( threshold < 0) {
+    if( threshold <= 0) {
         CV_Error( Error::StsBadArg, "threshold must be greater than 0" );
     }
     if( ((max_rho - min_rho) <= 0) || ((max_theta - min_theta) <= 0) ) {
